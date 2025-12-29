@@ -19,6 +19,7 @@ The Zammad Tool is an Open WebUI integration that provides comprehensive access 
 - **Article Operations**: Add and list ticket articles (comments/notes/emails)
 - **User Management**: Search and retrieve user information
 - **Organization Management**: Search and manage organizations
+- **Report Profile Access**: Read report profiles created by admins for ticket analysis
 - **Helper Endpoints**: Access ticket states, groups, and priorities
 - **Compact Mode**: Configurable output mode to reduce response size while preserving essential information
 - **Reliability Features**: Automatic retry logic with exponential backoff, rate limit handling, and jitter
@@ -32,6 +33,7 @@ The Zammad Tool is an Open WebUI integration that provides comprehensive access 
 - User and organization lookup
 - Automated ticket workflows
 - Support ticket reporting and analysis
+- Reading and using admin-configured report profiles for data filtering
 
 ---
 
@@ -118,6 +120,7 @@ The `Valves` class provides type-safe configuration:
 - Ticket States
 - Groups
 - Priorities
+- Report Profiles
 
 #### 2.2.4 Authentication & Authorization
 
@@ -359,6 +362,41 @@ async def zammad_list_priorities(
 
 **Compact Fields**: id, name, active
 
+### 3.6 Report Profile Operations
+
+#### 3.6.1 List Report Profiles
+```python
+async def zammad_list_report_profiles(
+    page: int = 1,
+    per_page: Optional[int] = None,
+    compact: Optional[bool] = None,
+) -> list[Json]
+```
+
+**Purpose**: List all report profiles (created by admins). Requires 'report' permission.
+
+**Key Features**:
+- Access report profiles without needing admin permissions
+- Retrieve configurations for filtering and analyzing ticket data
+- Use pagination to manage large lists of profiles
+
+**Compact Fields**: id, name, active, condition, created_at, updated_at
+
+#### 3.6.2 Get Report Profile
+```python
+async def zammad_get_report_profile(
+    report_profile_id: int,
+    compact: Optional[bool] = None
+) -> Json
+```
+
+**Purpose**: Retrieve a single report profile by ID. Requires 'report' permission.
+
+**Key Features**:
+- Fetch detailed configuration of a specific report profile
+- View filtering conditions and settings
+- Non-admin users can read profiles created by admins
+
 ---
 
 ## 4. Reliability & Error Handling
@@ -443,6 +481,11 @@ AI assistants invoke methods through natural language:
 2. `zammad_list_groups()` - Get available groups
 3. `zammad_create_ticket(title="...", group="Support", customer_email="...")` - Create ticket
 
+**Report Profile Workflow**:
+1. `zammad_list_report_profiles()` - List all available report profiles
+2. `zammad_get_report_profile(report_profile_id=1)` - Get specific profile details
+3. Use the profile's filter conditions to understand ticket filtering criteria
+
 ---
 
 ## 6. Known Limitations
@@ -455,6 +498,7 @@ AI assistants invoke methods through natural language:
 4. **No Custom Fields**: Custom ticket fields not explicitly handled
 5. **No Time Accounting**: Time tracking features not implemented
 6. **No Ticket Merging/Splitting**: Advanced ticket operations not supported
+7. **No Report Profile Creation**: Can only read report profiles, not create/edit/delete them (admin function)
 
 ### 6.2 Future Enhancement Opportunities
 
@@ -466,6 +510,7 @@ AI assistants invoke methods through natural language:
 6. **Ticket Templates**: Support for ticket templates
 7. **SLA Management**: Query and display SLA information
 8. **Knowledge Base**: Access to Zammad knowledge base articles
+9. **Report Generation**: Generate reports using report profile configurations
 9. **Overviews**: Access to custom ticket overviews
 
 ---
@@ -505,6 +550,7 @@ AI assistants invoke methods through natural language:
 **Priority** | Ticket urgency level
 **Organization** | Company or entity associated with customers
 **Internal Article** | Article visible only to agents, not customers
+**Report Profile** | Configuration with filters for analyzing ticket data, created by admins
 
 ---
 
@@ -537,6 +583,18 @@ AI:
 1. zammad_list_tickets(state="open")
 2. Count and categorize by group/priority
 3. Generate summary report
+```
+
+**Using Report Profiles**:
+```
+User: "What report profiles are available?"
+AI:
+1. zammad_list_report_profiles()
+2. Display available profiles with their names and conditions
+User: "Show me the details of the first report profile"
+AI:
+1. zammad_get_report_profile(report_profile_id=1)
+2. Display detailed configuration and filter conditions
 ```
 
 ### 9.2 API Reference Links
