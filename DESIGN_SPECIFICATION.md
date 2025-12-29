@@ -485,7 +485,6 @@ AI assistants invoke methods through natural language:
 1. `zammad_list_report_profiles()` - List all available report profiles
 2. `zammad_get_report_profile(report_profile_id=1)` - Get specific profile details
 3. Use the profile's filter conditions to understand ticket filtering criteria
-3. `zammad_create_ticket(title="...", group="Support", customer_email="...")` - Create ticket
 
 ---
 
