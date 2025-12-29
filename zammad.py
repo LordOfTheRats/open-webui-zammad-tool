@@ -6,7 +6,7 @@ git_url: https://github.com/LordOfTheRats/open-webui-zammad-tool
 description: Access Zammad ticket system from Open WebUI. Work with tickets, articles (comments), users, organizations, ticket states, groups, and report profiles. Supports compact output mode and basic retry/rate-limit handling.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 1.2.0
+version: 1.2.1
 licence: MIT
 """
 
@@ -365,7 +365,9 @@ class Tools:
           priority: Filter by priority name (e.g., "1 low", "2 normal", "3 high").
           group: Filter by group name.
           customer_id: Filter by customer user ID.
+            If you only have a username or name, resolve it first via zammad_search_users(query="...") and use "id".
           organization_id: Filter by organization ID.
+            If you only have a name, resolve it first via zammad_list_organizations(query="...") and use "id".
           page: Page number (1-based).
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
@@ -424,11 +426,13 @@ class Tools:
         Args:
           title: Ticket title.
           group: Group name (required).
-          customer_id: Customer user ID. Use zammad_search_users() to find user ID.
+          customer_id: Customer user ID.
+            If you only have a username or name, resolve it first via zammad_search_users(query="...") and use "id".
           customer_email: Alternative to customer_id - email to create/identify customer.
           state: Ticket state name (e.g., "new", "open").
           priority: Priority name (e.g., "2 normal").
           owner_id: Agent owner user ID.
+            If you only have a username or name, resolve it first via zammad_search_users(query="...") and use "id".
           article_body: Initial article/comment body (optional).
           article_type: Article type (default: "note"). Options: "note", "email", "phone", etc.
           article_internal: If true, article is internal (not visible to customer, default: True).
@@ -486,8 +490,11 @@ class Tools:
           priority: New priority name (or None to keep).
           group: New group name (or None to keep).
           owner_id: New owner user ID (or None to keep).
+            If you only have a username or name, resolve it first via zammad_search_users(query="...") and use "id".
           customer_id: New customer user ID (or None to keep).
+            If you only have a username or name, resolve it first via zammad_search_users(query="...") and use "id".
           organization_id: New organization ID (or None to keep).
+            If you only have a username or name, resolve it first via zammad_search_users(query="...") and use "id".
           compact: If true, tool returns a reduced field set.
         """
         payload: dict[str, Any] = {}
