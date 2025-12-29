@@ -327,18 +327,19 @@ class Tools:
             params: Optional[dict[str, Any]] = None,
             page: int = 1,
             per_page: Optional[int] = None,
-            client_side_pagination: bool = False,
     ) -> list[Any]:
         """
-        Paginate API requests.
+        Paginate API requests using client-side pagination.
+        
+        Fetches all results from the API and returns the requested page.
+        This approach is used because some Zammad API endpoints (like ticket_articles)
+        do not support server-side pagination parameters.
         
         Args:
             path: API endpoint path
             params: Query parameters
             page: Page number (1-based)
             per_page: Items per page
-            client_side_pagination: If True, fetch all results and paginate client-side.
-                                   Use for endpoints that don't support server-side pagination.
         
         Returns:
             List of results for the requested page
@@ -348,32 +349,17 @@ class Tools:
 
         effective_per_page = per_page or self.valves.per_page
 
-        if client_side_pagination:
-            # For endpoints that don't support server-side pagination (e.g., ticket_articles/by_ticket),
-            # fetch all results and paginate client-side
-            params = dict(params or {})
-            # Don't send page/per_page params as they're ignored anyway
-            result = await self._request("GET", path, params=params)
-            
-            if not isinstance(result, list):
-                return [result]
-            
-            # Apply client-side pagination
-            start_idx = (page - 1) * effective_per_page
-            end_idx = start_idx + effective_per_page
-            return result[start_idx:end_idx]
-        else:
-            # Standard server-side pagination
-            params = dict(params or {})
-            params["page"] = page
-            params["per_page"] = effective_per_page
-
-            result = await self._request("GET", path, params=params)
-
-            if not isinstance(result, list):
-                return [result]
-
-            return result
+        # Fetch all results (Zammad endpoints don't consistently support server-side pagination)
+        params = dict(params or {})
+        result = await self._request("GET", path, params=params)
+        
+        if not isinstance(result, list):
+            return [result]
+        
+        # Apply client-side pagination
+        start_idx = (page - 1) * effective_per_page
+        end_idx = start_idx + effective_per_page
+        return result[start_idx:end_idx]
 
     # ----------------------------
     # Ticket Operations
@@ -573,17 +559,11 @@ class Tools:
           page: Page number (1-based).
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set (still includes body).
-        
-        Note:
-          The Zammad API endpoint /ticket_articles/by_ticket/ does not support
-          server-side pagination. This function implements client-side pagination
-          by fetching all articles and returning the requested page.
         """
         data = await self._paginate(
             f"/ticket_articles/by_ticket/{ticket_id}",
             page=page,
             per_page=per_page,
-            client_side_pagination=True,  # Required: endpoint doesn't support server-side pagination
         )
         return self._maybe_compact("article", data, compact)
 
