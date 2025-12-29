@@ -567,7 +567,7 @@ class Tools:
         """
         # Enforce internal=True if public articles are not allowed
         effective_internal = internal if self.valves.allow_public_articles else True
-        
+
         payload: dict[str, Any] = {
             "ticket_id": ticket_id,
             "body": body,
