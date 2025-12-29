@@ -296,6 +296,7 @@ async def _paginate(
     if page < 1:
         raise ValueError("page must be >= 1")
 
+    per_page = int(per_page)
     effective_per_page = per_page or valves.per_page
     if effective_per_page < 1:
         raise ValueError("per_page must be >= 1")
