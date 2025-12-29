@@ -148,6 +148,7 @@ class Tools:
                 "updated_at": obj.get("updated_at"),
                 "close_at": obj.get("close_at"),
                 "tags": obj.get("tags"),
+                "article_count": obj.get("article_count"),
             }
 
         if kind == "article":
