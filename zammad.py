@@ -1,9 +1,9 @@
 """
-title: Zammad Ticket System - Tickets / Users / Organizations
+title: Zammad Ticket System - Tickets / Users / Organizations / Reports
 author: René Vögeli
 author_url: https://github.com/LordOfTheRats
 git_url: https://github.com/LordOfTheRats/open-webui-zammad-tool
-description: Access Zammad ticket system from Open WebUI. Work with tickets, articles (comments), users, organizations, ticket states, and groups. Supports compact output mode and basic retry/rate-limit handling.
+description: Access Zammad ticket system from Open WebUI. Work with tickets, articles (comments), users, organizations, ticket states, groups, and report profiles. Supports compact output mode and basic retry/rate-limit handling.
 required_open_webui_version: 0.4.0
 requirements: httpx
 version: 1.0.0
@@ -207,6 +207,16 @@ class Tools:
                 "id": obj.get("id"),
                 "name": obj.get("name"),
                 "active": obj.get("active"),
+            }
+
+        if kind == "report_profile":
+            return {
+                "id": obj.get("id"),
+                "name": obj.get("name"),
+                "active": obj.get("active"),
+                "condition": obj.get("condition"),
+                "created_at": obj.get("created_at"),
+                "updated_at": obj.get("updated_at"),
             }
 
         return obj
@@ -728,3 +738,37 @@ class Tools:
         """
         data = await self._paginate("/ticket_priorities", page=page, per_page=per_page)
         return self._maybe_compact("priority", data, compact)
+
+    # ----------------------------
+    # Report Profile Operations
+    # ----------------------------
+
+    async def zammad_list_report_profiles(
+            self,
+            page: int = 1,
+            per_page: Optional[int] = None,
+            compact: Optional[bool] = None,
+    ) -> list[Json]:
+        """
+        List report profiles (created by admins). Requires 'report' permission.
+
+        Args:
+          page: Page number (1-based).
+          per_page: Results per page (defaults to configured per_page).
+          compact: If true, tool returns a reduced field set.
+        """
+        data = await self._paginate("/report_profiles", page=page, per_page=per_page)
+        return self._maybe_compact("report_profile", data, compact)
+
+    async def zammad_get_report_profile(
+            self, report_profile_id: int, compact: Optional[bool] = None
+    ) -> Json:
+        """
+        Get a report profile by ID. Requires 'report' permission.
+
+        Args:
+          report_profile_id: Report profile ID.
+          compact: If true, tool returns a reduced field set.
+        """
+        data = await self._request("GET", f"/report_profiles/{report_profile_id}")
+        return self._maybe_compact("report_profile", data, compact)
