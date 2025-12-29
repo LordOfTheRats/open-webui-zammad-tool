@@ -6,7 +6,7 @@ git_url: https://github.com/LordOfTheRats/open-webui-zammad-tool
 description: Access Zammad ticket system from Open WebUI. Work with tickets, articles (comments), users, organizations, ticket states, groups, and report profiles. Supports compact output mode and basic retry/rate-limit handling.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 1.2.2
+version: 1.2.4
 licence: MIT
 """
 
@@ -292,6 +292,7 @@ async def _paginate(
     Returns:
         List of results for the requested page
     """
+    page = int(page)
     if page < 1:
         raise ValueError("page must be >= 1")
 
