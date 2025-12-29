@@ -348,6 +348,8 @@ class Tools:
             raise ValueError("page must be >= 1")
 
         effective_per_page = per_page or self.valves.per_page
+        if effective_per_page < 1:
+            raise ValueError("per_page must be >= 1")
 
         # Fetch all results (Zammad endpoints don't consistently support server-side pagination)
         params = dict(params or {})
