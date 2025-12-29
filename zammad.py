@@ -411,7 +411,7 @@ class Tools:
             owner_id: Optional[int] = None,
             article_body: Optional[str] = None,
             article_type: str = "note",
-            article_internal: bool = False,
+            article_internal: bool = True,
             compact: Optional[bool] = None,
     ) -> Json:
         """
@@ -427,7 +427,7 @@ class Tools:
           owner_id: Agent owner user ID.
           article_body: Initial article/comment body (optional).
           article_type: Article type (default: "note"). Options: "note", "email", "phone", etc.
-          article_internal: If true, article is internal (not visible to customer).
+          article_internal: If true, article is internal (not visible to customer, default: True).
           compact: If true, tool returns a reduced field set.
         """
         payload: dict[str, Any] = {
@@ -540,7 +540,7 @@ class Tools:
             ticket_id: TicketRef,
             body: str,
             type: str = "note",
-            internal: bool = False,
+            internal: bool = True,
             subject: Optional[str] = None,
             from_address: Optional[str] = None,
             to_address: Optional[str] = None,
@@ -553,7 +553,7 @@ class Tools:
           ticket_id: Ticket ID.
           body: Article body content.
           type: Article type. Options: "note" (default), "email", "phone", "web", etc.
-          internal: If true, article is internal (not visible to customer).
+          internal: If true, article is internal (not visible to customer, default: True).
           subject: Subject line (mainly for email type).
           from_address: From address (for email type).
           to_address: To address (for email type).
