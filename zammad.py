@@ -23,6 +23,295 @@ Json = dict[str, Any]
 TicketRef = int  # Ticket ID
 
 
+# ----------------------------
+# Helper functions
+# ----------------------------
+
+
+def _api_base(valves) -> str:
+    """Get the API base URL from valves configuration."""
+    return valves.base_url.rstrip("/") + "/api/v1"
+
+
+def _headers(valves) -> dict[str, str]:
+    """Generate HTTP headers for API requests."""
+    headers = {"Content-Type": "application/json"}
+
+    if valves.token:
+        headers["Authorization"] = f"Token token={valves.token}"
+    elif valves.username and valves.password:
+        # HTTP Basic Auth will be handled by httpx.BasicAuth
+        pass
+    else:
+        raise ValueError(
+            "Zammad authentication is not set. Configure the tool Valves: token=... or username=... and password=..."
+        )
+
+    return headers
+
+
+def _want_compact(valves, compact: Optional[bool]) -> bool:
+    """Determine if compact mode should be used."""
+    return valves.compact_results_default if compact is None else bool(compact)
+
+
+def _user_brief(u: Any) -> Optional[Json]:
+    """Extract brief user information."""
+    if not isinstance(u, dict):
+        return None
+    return {
+        "id": u.get("id"),
+        "firstname": u.get("firstname"),
+        "lastname": u.get("lastname"),
+        "email": u.get("email"),
+        "login": u.get("login"),
+    }
+
+
+def _compact_one(kind: str, obj: Any) -> Any:
+    """Compact a single object based on its kind."""
+    if not isinstance(obj, dict):
+        return obj
+
+    if kind == "ticket":
+        return {
+            "id": obj.get("id"),
+            "number": obj.get("number"),
+            "title": obj.get("title"),
+            "state": obj.get("state"),
+            "state_id": obj.get("state_id"),
+            "priority": obj.get("priority"),
+            "priority_id": obj.get("priority_id"),
+            "group": obj.get("group"),
+            "group_id": obj.get("group_id"),
+            "customer_id": obj.get("customer_id"),
+            "owner_id": obj.get("owner_id"),
+            "organization_id": obj.get("organization_id"),
+            "created_at": obj.get("created_at"),
+            "updated_at": obj.get("updated_at"),
+            "close_at": obj.get("close_at"),
+            "tags": obj.get("tags"),
+            "article_count": obj.get("article_count"),
+        }
+
+    if kind == "article":
+        # NOTE: In compact mode we STILL include body (it's the core of a comment).
+        return {
+            "id": obj.get("id"),
+            "ticket_id": obj.get("ticket_id"),
+            "type": obj.get("type"),
+            "sender": obj.get("sender"),
+            "from": obj.get("from"),
+            "to": obj.get("to"),
+            "subject": obj.get("subject"),
+            "body": obj.get("body"),
+            "content_type": obj.get("content_type"),
+            "internal": obj.get("internal"),
+            "created_at": obj.get("created_at"),
+            "created_by_id": obj.get("created_by_id"),
+        }
+
+    if kind == "user":
+        return {
+            "id": obj.get("id"),
+            "login": obj.get("login"),
+            "firstname": obj.get("firstname"),
+            "lastname": obj.get("lastname"),
+            "email": obj.get("email"),
+            "organization_id": obj.get("organization_id"),
+            "active": obj.get("active"),
+            "created_at": obj.get("created_at"),
+            "updated_at": obj.get("updated_at"),
+        }
+
+    if kind == "organization":
+        return {
+            "id": obj.get("id"),
+            "name": obj.get("name"),
+            "note": obj.get("note"),
+            "active": obj.get("active"),
+            "created_at": obj.get("created_at"),
+            "updated_at": obj.get("updated_at"),
+        }
+
+    if kind == "state":
+        return {
+            "id": obj.get("id"),
+            "name": obj.get("name"),
+            "state_type": obj.get("state_type"),
+            "active": obj.get("active"),
+        }
+
+    if kind == "group":
+        return {
+            "id": obj.get("id"),
+            "name": obj.get("name"),
+            "active": obj.get("active"),
+            "note": obj.get("note"),
+        }
+
+    if kind == "priority":
+        return {
+            "id": obj.get("id"),
+            "name": obj.get("name"),
+            "active": obj.get("active"),
+        }
+
+    if kind == "report_profile":
+        return {
+            "id": obj.get("id"),
+            "name": obj.get("name"),
+            "active": obj.get("active"),
+            "condition": obj.get("condition"),
+            "created_at": obj.get("created_at"),
+            "updated_at": obj.get("updated_at"),
+        }
+
+    return obj
+
+
+def _maybe_compact(kind: str, data: Any, valves, compact: Optional[bool]) -> Any:
+    """Apply compact mode to data if requested."""
+    if not _want_compact(valves, compact):
+        return data
+    if isinstance(data, list):
+        return [_compact_one(kind, x) for x in data]
+    return _compact_one(kind, data)
+
+
+def _compute_delay(valves, attempt: int, retry_after: Optional[float] = None) -> float:
+    """Compute retry delay with exponential backoff and jitter."""
+    if retry_after is not None and retry_after > 0:
+        base = float(retry_after)
+    else:
+        base = float(valves.backoff_initial_seconds) * (2 ** (attempt - 1))
+
+    base = min(base, float(valves.backoff_max_seconds))
+
+    jitter = float(valves.retry_jitter)
+    if jitter > 0:
+        delta = base * jitter
+        base = base + random.uniform(-delta, delta)
+
+    return max(0.0, base)
+
+
+async def _request(
+        valves,
+        method: str,
+        path: str,
+        params: Optional[dict[str, Any]] = None,
+        json: Optional[dict[str, Any]] = None,
+) -> Any:
+    """Make an HTTP request to the Zammad API with retry logic."""
+    url = _api_base(valves) + path
+    headers = _headers(valves)
+
+    max_retries = max(0, int(valves.max_retries))
+
+    # Prepare auth
+    auth = None
+    if valves.username and valves.password and not valves.token:
+        auth = httpx.BasicAuth(valves.username, valves.password)
+
+    async with httpx.AsyncClient(
+            verify=valves.verify_ssl,
+            timeout=valves.timeout_seconds,
+            headers=headers,
+            auth=auth,
+    ) as client:
+        for attempt in range(0, max_retries + 1):
+            try:
+                r = await client.request(method, url, params=params, json=json)
+
+                if r.status_code in (429, 502, 503, 504) and attempt < max_retries:
+                    retry_after_hdr = r.headers.get("Retry-After")
+                    retry_after: Optional[float] = None
+                    if retry_after_hdr:
+                        try:
+                            retry_after = float(retry_after_hdr)
+                        except Exception:
+                            retry_after = None
+                    delay = _compute_delay(
+                        valves, attempt=attempt + 1, retry_after=retry_after
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                if r.status_code >= 400:
+                    try:
+                        detail = r.json()
+                    except Exception:
+                        detail = r.text
+                    raise RuntimeError(
+                        f"Zammad API error {r.status_code} for {method} {path}: {detail}"
+                    )
+
+                if r.status_code == 204:
+                    return {"ok": True}
+
+                if not r.text:
+                    return {"ok": True}
+
+                return r.json()
+
+            except (
+                    httpx.ConnectTimeout,
+                    httpx.ReadTimeout,
+                    httpx.PoolTimeout,
+                    httpx.ConnectError,
+            ) as e:
+                if attempt < max_retries:
+                    delay = _compute_delay(valves, attempt=attempt + 1, retry_after=None)
+                    await asyncio.sleep(delay)
+                    continue
+                raise e
+
+
+async def _paginate(
+        valves,
+        path: str,
+        params: Optional[dict[str, Any]] = None,
+        page: int = 1,
+        per_page: Optional[int] = None,
+) -> list[Any]:
+    """
+    Paginate API requests using client-side pagination.
+    
+    Fetches all results from the API and returns the requested page.
+    This approach is used because some Zammad API endpoints (like ticket_articles)
+    do not support server-side pagination parameters.
+    
+    Args:
+        valves: Configuration valves
+        path: API endpoint path
+        params: Query parameters
+        page: Page number (1-based)
+        per_page: Items per page
+    
+    Returns:
+        List of results for the requested page
+    """
+    if page < 1:
+        raise ValueError("page must be >= 1")
+
+    effective_per_page = per_page or valves.per_page
+    if effective_per_page < 1:
+        raise ValueError("per_page must be >= 1")
+
+    # Fetch all results (Zammad endpoints don't consistently support server-side pagination)
+    params = dict(params or {})
+    result = await _request(valves, "GET", path, params=params)
+    
+    if not isinstance(result, list):
+        return [result]
+    
+    # Apply client-side pagination
+    start_idx = (page - 1) * effective_per_page
+    end_idx = start_idx + effective_per_page
+    return result[start_idx:end_idx]
+
+
 class Tools:
     """
     Open WebUI Toolkit for Zammad Ticket System.
@@ -91,280 +380,6 @@ class Tools:
         )
 
     # ----------------------------
-    # Internal helpers
-    # ----------------------------
-
-    def _api_base(self) -> str:
-        return self.valves.base_url.rstrip("/") + "/api/v1"
-
-    def _headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json"}
-
-        if self.valves.token:
-            headers["Authorization"] = f"Token token={self.valves.token}"
-        elif self.valves.username and self.valves.password:
-            # HTTP Basic Auth will be handled by httpx.BasicAuth
-            pass
-        else:
-            raise ValueError(
-                "Zammad authentication is not set. Configure the tool Valves: token=... or username=... and password=..."
-            )
-
-        return headers
-
-    def _want_compact(self, compact: Optional[bool]) -> bool:
-        return self.valves.compact_results_default if compact is None else bool(compact)
-
-    def _user_brief(self, u: Any) -> Optional[Json]:
-        if not isinstance(u, dict):
-            return None
-        return {
-            "id": u.get("id"),
-            "firstname": u.get("firstname"),
-            "lastname": u.get("lastname"),
-            "email": u.get("email"),
-            "login": u.get("login"),
-        }
-
-    def _compact_one(self, kind: str, obj: Any) -> Any:
-        if not isinstance(obj, dict):
-            return obj
-
-        if kind == "ticket":
-            return {
-                "id": obj.get("id"),
-                "number": obj.get("number"),
-                "title": obj.get("title"),
-                "state": obj.get("state"),
-                "state_id": obj.get("state_id"),
-                "priority": obj.get("priority"),
-                "priority_id": obj.get("priority_id"),
-                "group": obj.get("group"),
-                "group_id": obj.get("group_id"),
-                "customer_id": obj.get("customer_id"),
-                "owner_id": obj.get("owner_id"),
-                "organization_id": obj.get("organization_id"),
-                "created_at": obj.get("created_at"),
-                "updated_at": obj.get("updated_at"),
-                "close_at": obj.get("close_at"),
-                "tags": obj.get("tags"),
-                "article_count": obj.get("article_count"),
-            }
-
-        if kind == "article":
-            # NOTE: In compact mode we STILL include body (it's the core of a comment).
-            return {
-                "id": obj.get("id"),
-                "ticket_id": obj.get("ticket_id"),
-                "type": obj.get("type"),
-                "sender": obj.get("sender"),
-                "from": obj.get("from"),
-                "to": obj.get("to"),
-                "subject": obj.get("subject"),
-                "body": obj.get("body"),
-                "content_type": obj.get("content_type"),
-                "internal": obj.get("internal"),
-                "created_at": obj.get("created_at"),
-                "created_by_id": obj.get("created_by_id"),
-            }
-
-        if kind == "user":
-            return {
-                "id": obj.get("id"),
-                "login": obj.get("login"),
-                "firstname": obj.get("firstname"),
-                "lastname": obj.get("lastname"),
-                "email": obj.get("email"),
-                "organization_id": obj.get("organization_id"),
-                "active": obj.get("active"),
-                "created_at": obj.get("created_at"),
-                "updated_at": obj.get("updated_at"),
-            }
-
-        if kind == "organization":
-            return {
-                "id": obj.get("id"),
-                "name": obj.get("name"),
-                "note": obj.get("note"),
-                "active": obj.get("active"),
-                "created_at": obj.get("created_at"),
-                "updated_at": obj.get("updated_at"),
-            }
-
-        if kind == "state":
-            return {
-                "id": obj.get("id"),
-                "name": obj.get("name"),
-                "state_type": obj.get("state_type"),
-                "active": obj.get("active"),
-            }
-
-        if kind == "group":
-            return {
-                "id": obj.get("id"),
-                "name": obj.get("name"),
-                "active": obj.get("active"),
-                "note": obj.get("note"),
-            }
-
-        if kind == "priority":
-            return {
-                "id": obj.get("id"),
-                "name": obj.get("name"),
-                "active": obj.get("active"),
-            }
-
-        if kind == "report_profile":
-            return {
-                "id": obj.get("id"),
-                "name": obj.get("name"),
-                "active": obj.get("active"),
-                "condition": obj.get("condition"),
-                "created_at": obj.get("created_at"),
-                "updated_at": obj.get("updated_at"),
-            }
-
-        return obj
-
-    def _maybe_compact(self, kind: str, data: Any, compact: Optional[bool]) -> Any:
-        if not self._want_compact(compact):
-            return data
-        if isinstance(data, list):
-            return [self._compact_one(kind, x) for x in data]
-        return self._compact_one(kind, data)
-
-    def _compute_delay(
-            self, attempt: int, retry_after: Optional[float] = None
-    ) -> float:
-        if retry_after is not None and retry_after > 0:
-            base = float(retry_after)
-        else:
-            base = float(self.valves.backoff_initial_seconds) * (2 ** (attempt - 1))
-
-        base = min(base, float(self.valves.backoff_max_seconds))
-
-        jitter = float(self.valves.retry_jitter)
-        if jitter > 0:
-            delta = base * jitter
-            base = base + random.uniform(-delta, delta)
-
-        return max(0.0, base)
-
-    async def _request(
-            self,
-            method: str,
-            path: str,
-            params: Optional[dict[str, Any]] = None,
-            json: Optional[dict[str, Any]] = None,
-    ) -> Any:
-        url = self._api_base() + path
-        headers = self._headers()
-
-        max_retries = max(0, int(self.valves.max_retries))
-
-        # Prepare auth
-        auth = None
-        if self.valves.username and self.valves.password and not self.valves.token:
-            auth = httpx.BasicAuth(self.valves.username, self.valves.password)
-
-        async with httpx.AsyncClient(
-                verify=self.valves.verify_ssl,
-                timeout=self.valves.timeout_seconds,
-                headers=headers,
-                auth=auth,
-        ) as client:
-            for attempt in range(0, max_retries + 1):
-                try:
-                    r = await client.request(method, url, params=params, json=json)
-
-                    if r.status_code in (429, 502, 503, 504) and attempt < max_retries:
-                        retry_after_hdr = r.headers.get("Retry-After")
-                        retry_after: Optional[float] = None
-                        if retry_after_hdr:
-                            try:
-                                retry_after = float(retry_after_hdr)
-                            except Exception:
-                                retry_after = None
-                        delay = self._compute_delay(
-                            attempt=attempt + 1, retry_after=retry_after
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-
-                    if r.status_code >= 400:
-                        try:
-                            detail = r.json()
-                        except Exception:
-                            detail = r.text
-                        raise RuntimeError(
-                            f"Zammad API error {r.status_code} for {method} {path}: {detail}"
-                        )
-
-                    if r.status_code == 204:
-                        return {"ok": True}
-
-                    if not r.text:
-                        return {"ok": True}
-
-                    return r.json()
-
-                except (
-                        httpx.ConnectTimeout,
-                        httpx.ReadTimeout,
-                        httpx.PoolTimeout,
-                        httpx.ConnectError,
-                ) as e:
-                    if attempt < max_retries:
-                        delay = self._compute_delay(
-                            attempt=attempt + 1, retry_after=None
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    raise e
-
-    async def _paginate(
-            self,
-            path: str,
-            params: Optional[dict[str, Any]] = None,
-            page: int = 1,
-            per_page: Optional[int] = None,
-    ) -> list[Any]:
-        """
-        Paginate API requests using client-side pagination.
-        
-        Fetches all results from the API and returns the requested page.
-        This approach is used because some Zammad API endpoints (like ticket_articles)
-        do not support server-side pagination parameters.
-        
-        Args:
-            path: API endpoint path
-            params: Query parameters
-            page: Page number (1-based)
-            per_page: Items per page
-        
-        Returns:
-            List of results for the requested page
-        """
-        if page < 1:
-            raise ValueError("page must be >= 1")
-
-        effective_per_page = per_page or self.valves.per_page
-        if effective_per_page < 1:
-            raise ValueError("per_page must be >= 1")
-
-        # Fetch all results (Zammad endpoints don't consistently support server-side pagination)
-        params = dict(params or {})
-        result = await self._request("GET", path, params=params)
-        
-        if not isinstance(result, list):
-            return [result]
-        
-        # Apply client-side pagination
-        start_idx = (page - 1) * effective_per_page
-        end_idx = start_idx + effective_per_page
-        return result[start_idx:end_idx]
-
-    # ----------------------------
     # Ticket Operations
     # ----------------------------
 
@@ -412,8 +427,8 @@ class Tools:
         if search_filters:
             params["query"] = " AND ".join(search_filters)
 
-        data = await self._paginate("/tickets", params=params, page=page, per_page=per_page)
-        return self._maybe_compact("ticket", data, compact)
+        data = await _paginate(self.valves, "/tickets", params=params, page=page, per_page=per_page)
+        return _maybe_compact("ticket", data, self.valves, compact)
 
     async def zammad_get_ticket(
             self, ticket_id: TicketRef, compact: Optional[bool] = None
@@ -425,8 +440,8 @@ class Tools:
           ticket_id: Ticket ID.
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._request("GET", f"/tickets/{ticket_id}")
-        return self._maybe_compact("ticket", data, compact)
+        data = await _request(self.valves, "GET", f"/tickets/{ticket_id}")
+        return _maybe_compact("ticket", data, self.valves, compact)
 
     async def zammad_create_ticket(
             self,
@@ -487,8 +502,8 @@ class Tools:
                 "internal": effective_internal,
             }
 
-        data = await self._request("POST", "/tickets", json=payload)
-        return self._maybe_compact("ticket", data, compact)
+        data = await _request(self.valves, "POST", "/tickets", json=payload)
+        return _maybe_compact("ticket", data, self.valves, compact)
 
     async def zammad_update_ticket(
             self,
@@ -536,12 +551,13 @@ class Tools:
         if organization_id is not None:
             payload["organization_id"] = organization_id
 
-        data = await self._request(
+        data = await _request(
+            self.valves,
             "PUT",
             f"/tickets/{ticket_id}",
             json=payload if payload else None,
         )
-        return self._maybe_compact("ticket", data, compact)
+        return _maybe_compact("ticket", data, self.valves, compact)
 
     # ----------------------------
     # Ticket Article Operations (Comments/Notes)
@@ -563,12 +579,13 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set (still includes body).
         """
-        data = await self._paginate(
+        data = await _paginate(
+            self.valves,
             f"/ticket_articles/by_ticket/{ticket_id}",
             page=page,
             per_page=per_page,
         )
-        return self._maybe_compact("article", data, compact)
+        return _maybe_compact("article", data, self.valves, compact)
 
     async def zammad_create_ticket_article(
             self,
@@ -612,7 +629,7 @@ class Tools:
         if to_address:
             payload["to"] = to_address
 
-        return await self._request("POST", "/ticket_articles", json=payload)
+        return await _request(self.valves, "POST", "/ticket_articles", json=payload)
 
     # ----------------------------
     # User Operations
@@ -635,8 +652,8 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         params = {"query": search}
-        data = await self._paginate("/users/search", params=params, page=page, per_page=per_page)
-        return self._maybe_compact("user", data, compact)
+        data = await _paginate(self.valves, "/users/search", params=params, page=page, per_page=per_page)
+        return _maybe_compact("user", data, self.valves, compact)
 
     async def zammad_get_user(
             self, user_id: int, compact: Optional[bool] = None
@@ -648,8 +665,8 @@ class Tools:
           user_id: User ID.
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._request("GET", f"/users/{user_id}")
-        return self._maybe_compact("user", data, compact)
+        data = await _request(self.valves, "GET", f"/users/{user_id}")
+        return _maybe_compact("user", data, self.valves, compact)
 
     async def zammad_list_users(
             self,
@@ -665,8 +682,8 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._paginate("/users", page=page, per_page=per_page)
-        return self._maybe_compact("user", data, compact)
+        data = await _paginate(self.valves, "/users", page=page, per_page=per_page)
+        return _maybe_compact("user", data, self.valves, compact)
 
     # ----------------------------
     # Organization Operations
@@ -686,8 +703,8 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._paginate("/organizations", page=page, per_page=per_page)
-        return self._maybe_compact("organization", data, compact)
+        data = await _paginate(self.valves, "/organizations", page=page, per_page=per_page)
+        return _maybe_compact("organization", data, self.valves, compact)
 
     async def zammad_get_organization(
             self, organization_id: int, compact: Optional[bool] = None
@@ -699,8 +716,8 @@ class Tools:
           organization_id: Organization ID.
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._request("GET", f"/organizations/{organization_id}")
-        return self._maybe_compact("organization", data, compact)
+        data = await _request(self.valves, "GET", f"/organizations/{organization_id}")
+        return _maybe_compact("organization", data, self.valves, compact)
 
     async def zammad_search_organizations(
             self,
@@ -719,8 +736,8 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         params = {"query": search}
-        data = await self._paginate("/organizations/search", params=params, page=page, per_page=per_page)
-        return self._maybe_compact("organization", data, compact)
+        data = await _paginate(self.valves, "/organizations/search", params=params, page=page, per_page=per_page)
+        return _maybe_compact("organization", data, self.valves, compact)
 
     # ----------------------------
     # Helper Lookup Endpoints
@@ -740,8 +757,8 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._paginate("/ticket_states", page=page, per_page=per_page)
-        return self._maybe_compact("state", data, compact)
+        data = await _paginate(self.valves, "/ticket_states", page=page, per_page=per_page)
+        return _maybe_compact("state", data, self.valves, compact)
 
     async def zammad_list_groups(
             self,
@@ -757,8 +774,8 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._paginate("/groups", page=page, per_page=per_page)
-        return self._maybe_compact("group", data, compact)
+        data = await _paginate(self.valves, "/groups", page=page, per_page=per_page)
+        return _maybe_compact("group", data, self.valves, compact)
 
     async def zammad_list_priorities(
             self,
@@ -774,8 +791,8 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._paginate("/ticket_priorities", page=page, per_page=per_page)
-        return self._maybe_compact("priority", data, compact)
+        data = await _paginate(self.valves, "/ticket_priorities", page=page, per_page=per_page)
+        return _maybe_compact("priority", data, self.valves, compact)
 
     # ----------------------------
     # Report Profile Operations
@@ -795,8 +812,8 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._paginate("/report_profiles", page=page, per_page=per_page)
-        return self._maybe_compact("report_profile", data, compact)
+        data = await _paginate(self.valves, "/report_profiles", page=page, per_page=per_page)
+        return _maybe_compact("report_profile", data, self.valves, compact)
 
     async def zammad_get_report_profile(
             self, report_profile_id: int, compact: Optional[bool] = None
@@ -808,5 +825,5 @@ class Tools:
           report_profile_id: Report profile ID.
           compact: If true, tool returns a reduced field set.
         """
-        data = await self._request("GET", f"/report_profiles/{report_profile_id}")
-        return self._maybe_compact("report_profile", data, compact)
+        data = await _request(self.valves, "GET", f"/report_profiles/{report_profile_id}")
+        return _maybe_compact("report_profile", data, self.valves, compact)
