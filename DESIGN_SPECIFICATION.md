@@ -1,6 +1,6 @@
 # Zammad Tool for Open WebUI - Design Specification
 
-**Version:** 1.0.0  
+**Version:** 1.2.0  
 **Author:** René Vögeli 
 **License:** MIT  
 **Last Updated:** 2025-12-29
@@ -89,6 +89,7 @@ The `Valves` class provides type-safe configuration:
 | `backoff_initial_seconds` | float | 0.8 | Initial retry delay |
 | `backoff_max_seconds` | float | 10.0 | Maximum retry delay |
 | `retry_jitter` | float | 0.2 | Jitter proportion for retry delays |
+| `allow_public_articles` | bool | True | Allow creation of public articles. When disabled, forces all articles to be internal |
 
 #### 2.2.2 HTTP Client Layer
 
@@ -442,6 +443,13 @@ def _headers(self) -> dict[str, str]:
     ...
 ```
 
+**Public Article Control**:
+The `allow_public_articles` valve provides a safety mechanism to prevent accidental creation of public articles:
+- When `allow_public_articles=True` (default): Articles respect the `internal` parameter value
+- When `allow_public_articles=False`: All articles are forced to be internal (`internal=True`) regardless of the parameter value
+- This applies to both `zammad_create_ticket` (when creating initial article) and `zammad_create_ticket_article`
+- Useful for environments where public customer-facing articles should be restricted
+
 ---
 
 ## 5. Integration Patterns
@@ -607,7 +615,15 @@ AI:
 
 ### 9.3 Version History
 
-**1.0.0** (Current):
+**1.2.0** (Current):
+- Added `allow_public_articles` valve for controlling public article creation
+- Safety feature: when disabled, forces all articles to be internal regardless of parameter value
+- Applies to both ticket creation with initial article and standalone article creation
+
+**1.1.0**:
+- Set article_internal and internal to True by default
+
+**1.0.0**:
 - Initial release
 - Core ticket operations
 - Article management

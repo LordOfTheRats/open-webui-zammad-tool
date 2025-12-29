@@ -6,7 +6,7 @@ git_url: https://github.com/LordOfTheRats/open-webui-zammad-tool
 description: Access Zammad ticket system from Open WebUI. Work with tickets, articles (comments), users, organizations, ticket states, groups, and report profiles. Supports compact output mode and basic retry/rate-limit handling.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 1.1.0
+version: 1.2.0
 licence: MIT
 """
 
@@ -84,6 +84,10 @@ class Tools:
         retry_jitter: float = Field(
             0.2,
             description="Adds +/- jitter proportion of delay to spread retries (0.2 = +/-20%).",
+        )
+        allow_public_articles: bool = Field(
+            True,
+            description="Allow creation of public articles. When disabled, all articles are forced to be internal (not visible to customers) regardless of the internal parameter value.",
         )
 
     # ----------------------------
@@ -449,10 +453,12 @@ class Tools:
 
         # Add article if body provided
         if article_body:
+            # Enforce internal=True if public articles are not allowed
+            effective_internal = article_internal if self.valves.allow_public_articles else True
             payload["article"] = {
                 "body": article_body,
                 "type": article_type,
-                "internal": article_internal,
+                "internal": effective_internal,
             }
 
         data = await self._request("POST", "/tickets", json=payload)
@@ -559,11 +565,14 @@ class Tools:
           to_address: To address (for email type).
           content_type: Content type: "text/html" (default) or "text/plain".
         """
+        # Enforce internal=True if public articles are not allowed
+        effective_internal = internal if self.valves.allow_public_articles else True
+
         payload: dict[str, Any] = {
             "ticket_id": ticket_id,
             "body": body,
             "type": type,
-            "internal": internal,
+            "internal": effective_internal,
             "content_type": content_type,
         }
 
