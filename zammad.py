@@ -13,6 +13,7 @@ licence: MIT
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 from typing import Any, Optional
 
@@ -240,7 +241,6 @@ async def _emit_citation(
 
 def _format_for_citation(data: Any) -> str:
     """Format data as JSON string for citation content."""
-    import json
     return json.dumps(data, indent=2, ensure_ascii=False)
 
 
