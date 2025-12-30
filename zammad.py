@@ -223,19 +223,25 @@ async def _emit_citation(
     event_emitter: Optional[Any],
     name: str,
     url: str,
-    content: Optional[str] = None,
+    content: str,
 ) -> None:
-    """Emit a citation event to Open WebUI."""
+    """Emit a citation event to Open WebUI with actual content."""
     if event_emitter:
         citation_data = {
             "type": "citation",
             "data": {
-                "document": [content] if content else [],
+                "document": [content],
                 "metadata": [{"source": url, "name": name}],
                 "source": {"name": name},
             },
         }
         await event_emitter(citation_data)
+
+
+def _format_for_citation(data: Any) -> str:
+    """Format data as JSON string for citation content."""
+    import json
+    return json.dumps(data, indent=2, ensure_ascii=False)
 
 
 async def _emit_error(
@@ -509,7 +515,7 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, "Listing tickets from Zammad...", done=False)
+            await _emit_status(__event_emitter__, "📋 Listing tickets from Zammad...", done=False)
             
             params: dict[str, Any] = {}
 
@@ -532,16 +538,16 @@ class Tools:
             data = await _paginate(self.valves, "/tickets", params=params, page=page, per_page=per_page)
             result = _maybe_compact("ticket", data, self.valves, compact)
             
-            # Emit citation for the Zammad source
+            # Emit citation for the Zammad source with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Tickets",
                 url=f"{base_url}/tickets",
-                content=f"Retrieved {len(result)} tickets from Zammad"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, "Successfully retrieved tickets", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} tickets", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list tickets: {str(e)}"
@@ -560,22 +566,22 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, f"Fetching ticket #{ticket_id}...", done=False)
+            await _emit_status(__event_emitter__, f"🎫 Fetching ticket #{ticket_id}...", done=False)
             
             data = await _request(self.valves, "GET", f"/tickets/{ticket_id}")
             result = _maybe_compact("ticket", data, self.valves, compact)
             
-            # Emit citation for the specific ticket
+            # Emit citation for the specific ticket with actual data
             base_url = self.valves.base_url.rstrip("/")
             ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
             await _emit_citation(
                 __event_emitter__,
                 name=f"Ticket #{ticket_id}",
                 url=ticket_url,
-                content=f"Ticket: {result.get('title', 'N/A')}"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved ticket #{ticket_id}", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved ticket #{ticket_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to get ticket #{ticket_id}: {str(e)}"
@@ -619,13 +625,13 @@ class Tools:
         try:
             # Request confirmation if enabled
             if self.valves.require_confirmation_for_write_ops:
-                await _emit_status(__event_emitter__, "Requesting confirmation to create ticket...", done=False)
+                await _emit_status(__event_emitter__, "🤔 Requesting confirmation to create ticket...", done=False)
                 confirmation_msg = f"Create ticket '{title}' in group '{group}'?"
                 if not await _request_confirmation(__event_call__, "Create Ticket", confirmation_msg):
-                    await _emit_status(__event_emitter__, "Ticket creation cancelled by user", done=True)
+                    await _emit_status(__event_emitter__, "❌ Ticket creation cancelled by user", done=True)
                     raise OperationCancelledError("Ticket creation cancelled by user")
             
-            await _emit_status(__event_emitter__, f"Creating ticket '{title}'...", done=False)
+            await _emit_status(__event_emitter__, f"🎫 Creating ticket '{title}'...", done=False)
             
             payload: dict[str, Any] = {
                 "title": title,
@@ -657,7 +663,7 @@ class Tools:
             data = await _request(self.valves, "POST", "/tickets", json=payload)
             result = _maybe_compact("ticket", data, self.valves, compact)
             
-            # Emit citation for the newly created ticket
+            # Emit citation for the newly created ticket with actual data
             base_url = self.valves.base_url.rstrip("/")
             ticket_id = result.get("id", "unknown")
             ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
@@ -665,10 +671,10 @@ class Tools:
                 __event_emitter__,
                 name=f"Created Ticket #{ticket_id}",
                 url=ticket_url,
-                content=f"Created ticket: {title}"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully created ticket #{ticket_id}", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully created ticket #{ticket_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to create ticket: {str(e)}"
@@ -709,13 +715,13 @@ class Tools:
         try:
             # Request confirmation if enabled
             if self.valves.require_confirmation_for_write_ops:
-                await _emit_status(__event_emitter__, "Requesting confirmation to update ticket...", done=False)
+                await _emit_status(__event_emitter__, "🤔 Requesting confirmation to update ticket...", done=False)
                 confirmation_msg = f"Update ticket #{ticket_id}?"
                 if not await _request_confirmation(__event_call__, "Update Ticket", confirmation_msg):
-                    await _emit_status(__event_emitter__, "Ticket update cancelled by user", done=True)
+                    await _emit_status(__event_emitter__, "❌ Ticket update cancelled by user", done=True)
                     raise OperationCancelledError("Ticket update cancelled by user")
             
-            await _emit_status(__event_emitter__, f"Updating ticket #{ticket_id}...", done=False)
+            await _emit_status(__event_emitter__, f"✏️ Updating ticket #{ticket_id}...", done=False)
             
             payload: dict[str, Any] = {}
 
@@ -742,17 +748,17 @@ class Tools:
             )
             result = _maybe_compact("ticket", data, self.valves, compact)
             
-            # Emit citation for the updated ticket
+            # Emit citation for the updated ticket with actual data
             base_url = self.valves.base_url.rstrip("/")
             ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
             await _emit_citation(
                 __event_emitter__,
                 name=f"Updated Ticket #{ticket_id}",
                 url=ticket_url,
-                content=f"Updated ticket #{ticket_id}"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully updated ticket #{ticket_id}", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully updated ticket #{ticket_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to update ticket #{ticket_id}: {str(e)}"
@@ -781,7 +787,7 @@ class Tools:
           compact: If true, tool returns a reduced field set (still includes body).
         """
         try:
-            await _emit_status(__event_emitter__, f"Fetching articles for ticket #{ticket_id}...", done=False)
+            await _emit_status(__event_emitter__, f"💬 Fetching articles for ticket #{ticket_id}...", done=False)
             
             data = await _paginate(
                 self.valves,
@@ -791,17 +797,17 @@ class Tools:
             )
             result = _maybe_compact("article", data, self.valves, compact)
             
-            # Emit citation for the ticket articles
+            # Emit citation for the ticket articles with actual data
             base_url = self.valves.base_url.rstrip("/")
             ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
             await _emit_citation(
                 __event_emitter__,
                 name=f"Ticket #{ticket_id} Articles",
                 url=ticket_url,
-                content=f"Retrieved {len(result)} articles from ticket #{ticket_id}"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} articles", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} articles", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list articles for ticket #{ticket_id}: {str(e)}"
@@ -837,13 +843,13 @@ class Tools:
         try:
             # Request confirmation if enabled
             if self.valves.require_confirmation_for_write_ops:
-                await _emit_status(__event_emitter__, "Requesting confirmation to add article...", done=False)
+                await _emit_status(__event_emitter__, "🤔 Requesting confirmation to add article...", done=False)
                 confirmation_msg = f"Add article to ticket #{ticket_id}?"
                 if not await _request_confirmation(__event_call__, "Add Article", confirmation_msg):
-                    await _emit_status(__event_emitter__, "Article creation cancelled by user", done=True)
+                    await _emit_status(__event_emitter__, "❌ Article creation cancelled by user", done=True)
                     raise OperationCancelledError("Article creation cancelled by user")
             
-            await _emit_status(__event_emitter__, f"Adding article to ticket #{ticket_id}...", done=False)
+            await _emit_status(__event_emitter__, f"💬 Adding article to ticket #{ticket_id}...", done=False)
             
             # Enforce internal=True if public articles are not allowed
             effective_internal = internal if self.valves.allow_public_articles else True
@@ -865,17 +871,17 @@ class Tools:
 
             result = await _request(self.valves, "POST", "/ticket_articles", json=payload)
             
-            # Emit citation for the new article
+            # Emit citation for the new article with actual data
             base_url = self.valves.base_url.rstrip("/")
             ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
             await _emit_citation(
                 __event_emitter__,
                 name=f"Ticket #{ticket_id} - New Article",
                 url=ticket_url,
-                content=f"Added article to ticket #{ticket_id}"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully added article to ticket #{ticket_id}", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully added article to ticket #{ticket_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to create article for ticket #{ticket_id}: {str(e)}"
@@ -904,22 +910,22 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, f"Searching users for '{search}'...", done=False)
+            await _emit_status(__event_emitter__, f"🔍 Searching users for '{search}'...", done=False)
             
             params = {"query": search}
             data = await _paginate(self.valves, "/users/search", params=params, page=page, per_page=per_page)
             result = _maybe_compact("user", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Users Search",
                 url=f"{base_url}/users",
-                content=f"Found {len(result)} users matching '{search}'"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Found {len(result)} users", done=True)
+            await _emit_status(__event_emitter__, f"✅ Found {len(result)} users", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to search users: {str(e)}"
@@ -938,21 +944,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, f"Fetching user #{user_id}...", done=False)
+            await _emit_status(__event_emitter__, f"👤 Fetching user #{user_id}...", done=False)
             
             data = await _request(self.valves, "GET", f"/users/{user_id}")
             result = _maybe_compact("user", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name=f"User #{user_id}",
                 url=f"{base_url}/#user/profile/{user_id}",
-                content=f"User: {result.get('login', 'N/A')}"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved user #{user_id}", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved user #{user_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to get user #{user_id}: {str(e)}"
@@ -975,21 +981,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, "Listing users...", done=False)
+            await _emit_status(__event_emitter__, "👥 Listing users...", done=False)
             
             data = await _paginate(self.valves, "/users", page=page, per_page=per_page)
             result = _maybe_compact("user", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Users",
                 url=f"{base_url}/users",
-                content=f"Retrieved {len(result)} users"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} users", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} users", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list users: {str(e)}"
@@ -1016,21 +1022,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, "Listing organizations...", done=False)
+            await _emit_status(__event_emitter__, "🏢 Listing organizations...", done=False)
             
             data = await _paginate(self.valves, "/organizations", page=page, per_page=per_page)
             result = _maybe_compact("organization", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Organizations",
                 url=f"{base_url}/organizations",
-                content=f"Retrieved {len(result)} organizations"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} organizations", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} organizations", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list organizations: {str(e)}"
@@ -1049,21 +1055,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, f"Fetching organization #{organization_id}...", done=False)
+            await _emit_status(__event_emitter__, f"🏢 Fetching organization #{organization_id}...", done=False)
             
             data = await _request(self.valves, "GET", f"/organizations/{organization_id}")
             result = _maybe_compact("organization", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name=f"Organization #{organization_id}",
                 url=f"{base_url}/#organization/profile/{organization_id}",
-                content=f"Organization: {result.get('name', 'N/A')}"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved organization #{organization_id}", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved organization #{organization_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to get organization #{organization_id}: {str(e)}"
@@ -1088,22 +1094,22 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, f"Searching organizations for '{search}'...", done=False)
+            await _emit_status(__event_emitter__, f"🔍 Searching organizations for '{search}'...", done=False)
             
             params = {"query": search}
             data = await _paginate(self.valves, "/organizations/search", params=params, page=page, per_page=per_page)
             result = _maybe_compact("organization", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Organizations Search",
                 url=f"{base_url}/organizations",
-                content=f"Found {len(result)} organizations matching '{search}'"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Found {len(result)} organizations", done=True)
+            await _emit_status(__event_emitter__, f"✅ Found {len(result)} organizations", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to search organizations: {str(e)}"
@@ -1130,21 +1136,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, "Listing ticket states...", done=False)
+            await _emit_status(__event_emitter__, "🏷️ Listing ticket states...", done=False)
             
             data = await _paginate(self.valves, "/ticket_states", page=page, per_page=per_page)
             result = _maybe_compact("state", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Ticket States",
                 url=f"{base_url}/api/v1/ticket_states",
-                content=f"Retrieved {len(result)} ticket states"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} ticket states", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} ticket states", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list ticket states: {str(e)}"
@@ -1167,21 +1173,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, "Listing groups...", done=False)
+            await _emit_status(__event_emitter__, "👥 Listing groups...", done=False)
             
             data = await _paginate(self.valves, "/groups", page=page, per_page=per_page)
             result = _maybe_compact("group", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Groups",
                 url=f"{base_url}/api/v1/groups",
-                content=f"Retrieved {len(result)} groups"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} groups", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} groups", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list groups: {str(e)}"
@@ -1204,21 +1210,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, "Listing priorities...", done=False)
+            await _emit_status(__event_emitter__, "🎯 Listing priorities...", done=False)
             
             data = await _paginate(self.valves, "/ticket_priorities", page=page, per_page=per_page)
             result = _maybe_compact("priority", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Priorities",
                 url=f"{base_url}/api/v1/ticket_priorities",
-                content=f"Retrieved {len(result)} priorities"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} priorities", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} priorities", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list priorities: {str(e)}"
@@ -1245,21 +1251,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, "Listing report profiles...", done=False)
+            await _emit_status(__event_emitter__, "📊 Listing report profiles...", done=False)
             
             data = await _paginate(self.valves, "/report_profiles", page=page, per_page=per_page)
             result = _maybe_compact("report_profile", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name="Zammad Report Profiles",
                 url=f"{base_url}/api/v1/report_profiles",
-                content=f"Retrieved {len(result)} report profiles"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} report profiles", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} report profiles", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list report profiles: {str(e)}"
@@ -1278,21 +1284,21 @@ class Tools:
           compact: If true, tool returns a reduced field set.
         """
         try:
-            await _emit_status(__event_emitter__, f"Fetching report profile #{report_profile_id}...", done=False)
+            await _emit_status(__event_emitter__, f"📊 Fetching report profile #{report_profile_id}...", done=False)
             
             data = await _request(self.valves, "GET", f"/report_profiles/{report_profile_id}")
             result = _maybe_compact("report_profile", data, self.valves, compact)
             
-            # Emit citation
+            # Emit citation with actual data
             base_url = self.valves.base_url.rstrip("/")
             await _emit_citation(
                 __event_emitter__,
                 name=f"Report Profile #{report_profile_id}",
                 url=f"{base_url}/api/v1/report_profiles/{report_profile_id}",
-                content=f"Report Profile: {result.get('name', 'N/A')}"
+                content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"Successfully retrieved report profile #{report_profile_id}", done=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved report profile #{report_profile_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to get report profile #{report_profile_id}: {str(e)}"
