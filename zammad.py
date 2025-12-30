@@ -23,6 +23,11 @@ Json = dict[str, Any]
 TicketRef = int  # Ticket ID
 
 
+class OperationCancelledError(Exception):
+    """Raised when a user cancels an operation via confirmation dialog."""
+    pass
+
+
 # ----------------------------
 # Helper functions
 # ----------------------------
@@ -254,7 +259,15 @@ async def _request_confirmation(
     title: str,
     message: str,
 ) -> bool:
-    """Request user confirmation via Open WebUI event call."""
+    """
+    Request user confirmation via Open WebUI event call.
+    
+    Returns True if the user confirms or if event_call is not available.
+    Returns False if the user declines the confirmation.
+    
+    The event_call may return either boolean True or the string "confirmed"
+    depending on the Open WebUI version/configuration.
+    """
     if not event_call:
         return True
     
@@ -605,7 +618,7 @@ class Tools:
                 confirmation_msg = f"Create ticket '{title}' in group '{group}'?"
                 if not await _request_confirmation(__event_call__, "Create Ticket", confirmation_msg):
                     await _emit_status(__event_emitter__, "Ticket creation cancelled by user", done=True)
-                    return {"cancelled": True, "message": "Ticket creation cancelled by user"}
+                    raise OperationCancelledError("Ticket creation cancelled by user")
             
             await _emit_status(__event_emitter__, f"Creating ticket '{title}'...", done=False)
             
@@ -695,7 +708,7 @@ class Tools:
                 confirmation_msg = f"Update ticket #{ticket_id}?"
                 if not await _request_confirmation(__event_call__, "Update Ticket", confirmation_msg):
                     await _emit_status(__event_emitter__, "Ticket update cancelled by user", done=True)
-                    return {"cancelled": True, "message": "Ticket update cancelled by user"}
+                    raise OperationCancelledError("Ticket update cancelled by user")
             
             await _emit_status(__event_emitter__, f"Updating ticket #{ticket_id}...", done=False)
             
@@ -823,7 +836,7 @@ class Tools:
                 confirmation_msg = f"Add article to ticket #{ticket_id}?"
                 if not await _request_confirmation(__event_call__, "Add Article", confirmation_msg):
                     await _emit_status(__event_emitter__, "Article creation cancelled by user", done=True)
-                    return {"cancelled": True, "message": "Article creation cancelled by user"}
+                    raise OperationCancelledError("Article creation cancelled by user")
             
             await _emit_status(__event_emitter__, f"Adding article to ticket #{ticket_id}...", done=False)
             
