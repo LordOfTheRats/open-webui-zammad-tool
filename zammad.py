@@ -6,7 +6,7 @@ git_url: https://github.com/LordOfTheRats/open-webui-zammad-tool
 description: Access Zammad ticket system from Open WebUI. Work with tickets, articles (comments), users, organizations, ticket states, groups, and report profiles. Supports compact output mode and basic retry/rate-limit handling. Features event emitter integration for status messages, citations, errors, and confirmations.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 1.3.0
+version: 1.3.2
 licence: MIT
 """
 
@@ -396,7 +396,9 @@ async def _paginate(
     if page < 1:
         raise ValueError("page must be >= 1")
 
-    per_page = int(per_page)
+    # Handle per_page: convert to int if not None, otherwise use default
+    if per_page is not None:
+        per_page = int(per_page)
     effective_per_page = per_page or valves.per_page
     if effective_per_page < 1:
         raise ValueError("per_page must be >= 1")
@@ -549,7 +551,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} tickets", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} tickets", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list tickets: {str(e)}"
@@ -583,7 +585,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved ticket #{ticket_id}", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved ticket #{ticket_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to get ticket #{ticket_id}: {str(e)}"
@@ -630,7 +632,7 @@ class Tools:
                 await _emit_status(__event_emitter__, "🤔 Requesting confirmation to create ticket...", done=False)
                 confirmation_msg = f"Create ticket '{title}' in group '{group}'?"
                 if not await _request_confirmation(__event_call__, "Create Ticket", confirmation_msg):
-                    await _emit_status(__event_emitter__, "❌ Ticket creation cancelled by user", done=True, hidden=True)
+                    await _emit_status(__event_emitter__, "❌ Ticket creation cancelled by user", done=True)
                     raise OperationCancelledError("Ticket creation cancelled by user")
             
             await _emit_status(__event_emitter__, f"🎫 Creating ticket '{title}'...", done=False)
@@ -676,7 +678,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully created ticket #{ticket_id}", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully created ticket #{ticket_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to create ticket: {str(e)}"
@@ -720,7 +722,7 @@ class Tools:
                 await _emit_status(__event_emitter__, "🤔 Requesting confirmation to update ticket...", done=False)
                 confirmation_msg = f"Update ticket #{ticket_id}?"
                 if not await _request_confirmation(__event_call__, "Update Ticket", confirmation_msg):
-                    await _emit_status(__event_emitter__, "❌ Ticket update cancelled by user", done=True, hidden=True)
+                    await _emit_status(__event_emitter__, "❌ Ticket update cancelled by user", done=True)
                     raise OperationCancelledError("Ticket update cancelled by user")
             
             await _emit_status(__event_emitter__, f"✏️ Updating ticket #{ticket_id}...", done=False)
@@ -760,7 +762,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully updated ticket #{ticket_id}", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully updated ticket #{ticket_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to update ticket #{ticket_id}: {str(e)}"
@@ -809,7 +811,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} articles", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} articles", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list articles for ticket #{ticket_id}: {str(e)}"
@@ -848,7 +850,7 @@ class Tools:
                 await _emit_status(__event_emitter__, "🤔 Requesting confirmation to add article...", done=False)
                 confirmation_msg = f"Add article to ticket #{ticket_id}?"
                 if not await _request_confirmation(__event_call__, "Add Article", confirmation_msg):
-                    await _emit_status(__event_emitter__, "❌ Article creation cancelled by user", done=True, hidden=True)
+                    await _emit_status(__event_emitter__, "❌ Article creation cancelled by user", done=True)
                     raise OperationCancelledError("Article creation cancelled by user")
             
             await _emit_status(__event_emitter__, f"💬 Adding article to ticket #{ticket_id}...", done=False)
@@ -883,7 +885,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully added article to ticket #{ticket_id}", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully added article to ticket #{ticket_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to create article for ticket #{ticket_id}: {str(e)}"
@@ -927,7 +929,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Found {len(result)} users", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Found {len(result)} users", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to search users: {str(e)}"
@@ -960,7 +962,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved user #{user_id}", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved user #{user_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to get user #{user_id}: {str(e)}"
@@ -997,7 +999,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} users", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} users", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list users: {str(e)}"
@@ -1038,7 +1040,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} organizations", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} organizations", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list organizations: {str(e)}"
@@ -1071,7 +1073,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved organization #{organization_id}", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved organization #{organization_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to get organization #{organization_id}: {str(e)}"
@@ -1111,7 +1113,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Found {len(result)} organizations", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Found {len(result)} organizations", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to search organizations: {str(e)}"
@@ -1152,7 +1154,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} ticket states", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} ticket states", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list ticket states: {str(e)}"
@@ -1189,7 +1191,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} groups", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} groups", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list groups: {str(e)}"
@@ -1226,7 +1228,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} priorities", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} priorities", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list priorities: {str(e)}"
@@ -1267,7 +1269,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} report profiles", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved {len(result)} report profiles", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to list report profiles: {str(e)}"
@@ -1300,7 +1302,7 @@ class Tools:
                 content=_format_for_citation(result)
             )
             
-            await _emit_status(__event_emitter__, f"✅ Successfully retrieved report profile #{report_profile_id}", done=True, hidden=True)
+            await _emit_status(__event_emitter__, f"✅ Successfully retrieved report profile #{report_profile_id}", done=True)
             return result
         except Exception as e:
             error_msg = f"Failed to get report profile #{report_profile_id}: {str(e)}"
