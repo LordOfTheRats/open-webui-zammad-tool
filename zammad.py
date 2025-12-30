@@ -262,11 +262,16 @@ async def _request_confirmation(
     """
     Request user confirmation via Open WebUI event call.
     
-    Returns True if the user confirms or if event_call is not available.
+    Returns True if the user confirms or if event_call is not available
+    (which allows operations to proceed normally when event system is not active).
     Returns False if the user declines the confirmation.
     
     The event_call may return either boolean True or the string "confirmed"
     depending on the Open WebUI version/configuration.
+    
+    Note: When event_call is None, the function returns True, allowing the
+    operation to proceed. This default behavior assumes confirmations are only
+    required when explicitly enabled via the require_confirmation_for_write_ops valve.
     """
     if not event_call:
         return True
