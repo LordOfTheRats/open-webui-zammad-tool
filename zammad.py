@@ -3,10 +3,10 @@ title: Zammad Ticket System - Tickets / Users / Organizations / Reports
 author: René Vögeli
 author_url: https://github.com/LordOfTheRats
 git_url: https://github.com/LordOfTheRats/open-webui-zammad-tool
-description: Access Zammad ticket system from Open WebUI. Work with tickets, articles (comments), users, organizations, ticket states, groups, and report profiles. Supports compact output mode and basic retry/rate-limit handling.
+description: Access Zammad ticket system from Open WebUI. Work with tickets, articles (comments), users, organizations, ticket states, groups, and report profiles. Supports compact output mode and basic retry/rate-limit handling. Features event emitter integration for status messages, citations, errors, and confirmations.
 required_open_webui_version: 0.4.0
 requirements: httpx
-version: 1.2.4
+version: 1.3.0
 licence: MIT
 """
 
@@ -196,6 +196,80 @@ def _compute_delay(valves, attempt: int, retry_after: Optional[float] = None) ->
     return max(0.0, base)
 
 
+async def _emit_status(
+    event_emitter: Optional[Any],
+    description: str,
+    done: bool = False,
+) -> None:
+    """Emit a status event to Open WebUI."""
+    if event_emitter:
+        await event_emitter(
+            {
+                "type": "status",
+                "data": {
+                    "description": description,
+                    "done": done,
+                },
+            }
+        )
+
+
+async def _emit_citation(
+    event_emitter: Optional[Any],
+    name: str,
+    url: str,
+    content: Optional[str] = None,
+) -> None:
+    """Emit a citation event to Open WebUI."""
+    if event_emitter:
+        citation_data = {
+            "type": "citation",
+            "data": {
+                "document": [content] if content else [],
+                "metadata": [{"source": url, "name": name}],
+                "source": {"name": name},
+            },
+        }
+        await event_emitter(citation_data)
+
+
+async def _emit_error(
+    event_emitter: Optional[Any],
+    error_message: str,
+) -> None:
+    """Emit an error event to Open WebUI."""
+    if event_emitter:
+        await event_emitter(
+            {
+                "type": "chat:message:error",
+                "data": {
+                    "content": error_message,
+                },
+            }
+        )
+
+
+async def _request_confirmation(
+    event_call: Optional[Any],
+    title: str,
+    message: str,
+) -> bool:
+    """Request user confirmation via Open WebUI event call."""
+    if not event_call:
+        return True
+    
+    result = await event_call(
+        {
+            "type": "confirmation",
+            "data": {
+                "title": title,
+                "message": message,
+            },
+        }
+    )
+    return result is True or result == "confirmed"
+
+
 async def _request(
         valves,
         method: str,
@@ -380,6 +454,10 @@ class Tools:
             True,
             description="Allow creation of public articles. When disabled, all articles are forced to be internal (not visible to customers) regardless of the internal parameter value.",
         )
+        require_confirmation_for_write_ops: bool = Field(
+            False,
+            description="Require user confirmation before executing write operations (create, update). When enabled, user will be prompted to confirm each write operation.",
+        )
 
     # ----------------------------
     # Ticket Operations
@@ -395,6 +473,7 @@ class Tools:
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         List tickets with optional filtering.
@@ -411,29 +490,49 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        params: dict[str, Any] = {}
+        try:
+            await _emit_status(__event_emitter__, "Listing tickets from Zammad...", done=False)
+            
+            params: dict[str, Any] = {}
 
-        # Build search query if filters provided
-        search_filters = []
-        if state:
-            search_filters.append(f"state:{state}")
-        if priority:
-            search_filters.append(f"priority:{priority}")
-        if group:
-            search_filters.append(f"group:{group}")
-        if customer_id:
-            search_filters.append(f"customer_id:{customer_id}")
-        if organization_id:
-            search_filters.append(f"organization_id:{organization_id}")
+            # Build search query if filters provided
+            search_filters = []
+            if state:
+                search_filters.append(f"state:{state}")
+            if priority:
+                search_filters.append(f"priority:{priority}")
+            if group:
+                search_filters.append(f"group:{group}")
+            if customer_id:
+                search_filters.append(f"customer_id:{customer_id}")
+            if organization_id:
+                search_filters.append(f"organization_id:{organization_id}")
 
-        if search_filters:
-            params["query"] = " AND ".join(search_filters)
+            if search_filters:
+                params["query"] = " AND ".join(search_filters)
 
-        data = await _paginate(self.valves, "/tickets", params=params, page=page, per_page=per_page)
-        return _maybe_compact("ticket", data, self.valves, compact)
+            data = await _paginate(self.valves, "/tickets", params=params, page=page, per_page=per_page)
+            result = _maybe_compact("ticket", data, self.valves, compact)
+            
+            # Emit citation for the Zammad source
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Tickets",
+                url=f"{base_url}/tickets",
+                content=f"Retrieved {len(result)} tickets from Zammad"
+            )
+            
+            await _emit_status(__event_emitter__, "Successfully retrieved tickets", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to list tickets: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_get_ticket(
-            self, ticket_id: TicketRef, compact: Optional[bool] = None
+            self, ticket_id: TicketRef, compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> Json:
         """
         Get a single ticket by ID.
@@ -442,8 +541,28 @@ class Tools:
           ticket_id: Ticket ID.
           compact: If true, tool returns a reduced field set.
         """
-        data = await _request(self.valves, "GET", f"/tickets/{ticket_id}")
-        return _maybe_compact("ticket", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, f"Fetching ticket #{ticket_id}...", done=False)
+            
+            data = await _request(self.valves, "GET", f"/tickets/{ticket_id}")
+            result = _maybe_compact("ticket", data, self.valves, compact)
+            
+            # Emit citation for the specific ticket
+            base_url = self.valves.base_url.rstrip("/")
+            ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
+            await _emit_citation(
+                __event_emitter__,
+                name=f"Ticket #{ticket_id}",
+                url=ticket_url,
+                content=f"Ticket: {result.get('title', 'N/A')}"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved ticket #{ticket_id}", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to get ticket #{ticket_id}: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_create_ticket(
             self,
@@ -458,6 +577,8 @@ class Tools:
             article_type: str = "note",
             article_internal: bool = True,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
+            __event_call__: Optional[Any] = None,
     ) -> Json:
         """
         Create a ticket.
@@ -477,35 +598,64 @@ class Tools:
           article_internal: If true, article is internal (not visible to customer, default: True).
           compact: If true, tool returns a reduced field set.
         """
-        payload: dict[str, Any] = {
-            "title": title,
-            "group": group,
-        }
-
-        if customer_id is not None:
-            payload["customer_id"] = customer_id
-        elif customer_email:
-            payload["customer_id"] = f"guess:{customer_email}"
-
-        if state:
-            payload["state"] = state
-        if priority:
-            payload["priority"] = priority
-        if owner_id is not None:
-            payload["owner_id"] = owner_id
-
-        # Add article if body provided
-        if article_body:
-            # Enforce internal=True if public articles are not allowed
-            effective_internal = article_internal if self.valves.allow_public_articles else True
-            payload["article"] = {
-                "body": article_body,
-                "type": article_type,
-                "internal": effective_internal,
+        try:
+            # Request confirmation if enabled
+            if self.valves.require_confirmation_for_write_ops:
+                await _emit_status(__event_emitter__, "Requesting confirmation to create ticket...", done=False)
+                confirmation_msg = f"Create ticket '{title}' in group '{group}'?"
+                if not await _request_confirmation(__event_call__, "Create Ticket", confirmation_msg):
+                    await _emit_status(__event_emitter__, "Ticket creation cancelled by user", done=True)
+                    return {"cancelled": True, "message": "Ticket creation cancelled by user"}
+            
+            await _emit_status(__event_emitter__, f"Creating ticket '{title}'...", done=False)
+            
+            payload: dict[str, Any] = {
+                "title": title,
+                "group": group,
             }
 
-        data = await _request(self.valves, "POST", "/tickets", json=payload)
-        return _maybe_compact("ticket", data, self.valves, compact)
+            if customer_id is not None:
+                payload["customer_id"] = customer_id
+            elif customer_email:
+                payload["customer_id"] = f"guess:{customer_email}"
+
+            if state:
+                payload["state"] = state
+            if priority:
+                payload["priority"] = priority
+            if owner_id is not None:
+                payload["owner_id"] = owner_id
+
+            # Add article if body provided
+            if article_body:
+                # Enforce internal=True if public articles are not allowed
+                effective_internal = article_internal if self.valves.allow_public_articles else True
+                payload["article"] = {
+                    "body": article_body,
+                    "type": article_type,
+                    "internal": effective_internal,
+                }
+
+            data = await _request(self.valves, "POST", "/tickets", json=payload)
+            result = _maybe_compact("ticket", data, self.valves, compact)
+            
+            # Emit citation for the newly created ticket
+            base_url = self.valves.base_url.rstrip("/")
+            ticket_id = result.get("id", "unknown")
+            ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
+            await _emit_citation(
+                __event_emitter__,
+                name=f"Created Ticket #{ticket_id}",
+                url=ticket_url,
+                content=f"Created ticket: {title}"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully created ticket #{ticket_id}", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to create ticket: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_update_ticket(
             self,
@@ -518,6 +668,8 @@ class Tools:
             customer_id: Optional[int] = None,
             organization_id: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
+            __event_call__: Optional[Any] = None,
     ) -> Json:
         """
         Update a ticket.
@@ -536,30 +688,58 @@ class Tools:
             If you only have a username or name, resolve it first via zammad_search_users(search="...") and use "id".
           compact: If true, tool returns a reduced field set.
         """
-        payload: dict[str, Any] = {}
+        try:
+            # Request confirmation if enabled
+            if self.valves.require_confirmation_for_write_ops:
+                await _emit_status(__event_emitter__, "Requesting confirmation to update ticket...", done=False)
+                confirmation_msg = f"Update ticket #{ticket_id}?"
+                if not await _request_confirmation(__event_call__, "Update Ticket", confirmation_msg):
+                    await _emit_status(__event_emitter__, "Ticket update cancelled by user", done=True)
+                    return {"cancelled": True, "message": "Ticket update cancelled by user"}
+            
+            await _emit_status(__event_emitter__, f"Updating ticket #{ticket_id}...", done=False)
+            
+            payload: dict[str, Any] = {}
 
-        if title is not None:
-            payload["title"] = title
-        if state is not None:
-            payload["state"] = state
-        if priority is not None:
-            payload["priority"] = priority
-        if group is not None:
-            payload["group"] = group
-        if owner_id is not None:
-            payload["owner_id"] = owner_id
-        if customer_id is not None:
-            payload["customer_id"] = customer_id
-        if organization_id is not None:
-            payload["organization_id"] = organization_id
+            if title is not None:
+                payload["title"] = title
+            if state is not None:
+                payload["state"] = state
+            if priority is not None:
+                payload["priority"] = priority
+            if group is not None:
+                payload["group"] = group
+            if owner_id is not None:
+                payload["owner_id"] = owner_id
+            if customer_id is not None:
+                payload["customer_id"] = customer_id
+            if organization_id is not None:
+                payload["organization_id"] = organization_id
 
-        data = await _request(
-            self.valves,
-            "PUT",
-            f"/tickets/{ticket_id}",
-            json=payload if payload else None,
-        )
-        return _maybe_compact("ticket", data, self.valves, compact)
+            data = await _request(
+                self.valves,
+                "PUT",
+                f"/tickets/{ticket_id}",
+                json=payload if payload else None,
+            )
+            result = _maybe_compact("ticket", data, self.valves, compact)
+            
+            # Emit citation for the updated ticket
+            base_url = self.valves.base_url.rstrip("/")
+            ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
+            await _emit_citation(
+                __event_emitter__,
+                name=f"Updated Ticket #{ticket_id}",
+                url=ticket_url,
+                content=f"Updated ticket #{ticket_id}"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully updated ticket #{ticket_id}", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to update ticket #{ticket_id}: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     # ----------------------------
     # Ticket Article Operations (Comments/Notes)
@@ -571,6 +751,7 @@ class Tools:
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         List articles (comments/notes) for a ticket.
@@ -581,13 +762,33 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set (still includes body).
         """
-        data = await _paginate(
-            self.valves,
-            f"/ticket_articles/by_ticket/{ticket_id}",
-            page=page,
-            per_page=per_page,
-        )
-        return _maybe_compact("article", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, f"Fetching articles for ticket #{ticket_id}...", done=False)
+            
+            data = await _paginate(
+                self.valves,
+                f"/ticket_articles/by_ticket/{ticket_id}",
+                page=page,
+                per_page=per_page,
+            )
+            result = _maybe_compact("article", data, self.valves, compact)
+            
+            # Emit citation for the ticket articles
+            base_url = self.valves.base_url.rstrip("/")
+            ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
+            await _emit_citation(
+                __event_emitter__,
+                name=f"Ticket #{ticket_id} Articles",
+                url=ticket_url,
+                content=f"Retrieved {len(result)} articles from ticket #{ticket_id}"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} articles", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to list articles for ticket #{ticket_id}: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_create_ticket_article(
             self,
@@ -599,6 +800,8 @@ class Tools:
             from_address: Optional[str] = None,
             to_address: Optional[str] = None,
             content_type: str = "text/html",
+            __event_emitter__: Optional[Any] = None,
+            __event_call__: Optional[Any] = None,
     ) -> Json:
         """
         Add an article (comment/note) to a ticket.
@@ -613,25 +816,53 @@ class Tools:
           to_address: To address (for email type).
           content_type: Content type: "text/html" (default) or "text/plain".
         """
-        # Enforce internal=True if public articles are not allowed
-        effective_internal = internal if self.valves.allow_public_articles else True
+        try:
+            # Request confirmation if enabled
+            if self.valves.require_confirmation_for_write_ops:
+                await _emit_status(__event_emitter__, "Requesting confirmation to add article...", done=False)
+                confirmation_msg = f"Add article to ticket #{ticket_id}?"
+                if not await _request_confirmation(__event_call__, "Add Article", confirmation_msg):
+                    await _emit_status(__event_emitter__, "Article creation cancelled by user", done=True)
+                    return {"cancelled": True, "message": "Article creation cancelled by user"}
+            
+            await _emit_status(__event_emitter__, f"Adding article to ticket #{ticket_id}...", done=False)
+            
+            # Enforce internal=True if public articles are not allowed
+            effective_internal = internal if self.valves.allow_public_articles else True
 
-        payload: dict[str, Any] = {
-            "ticket_id": ticket_id,
-            "body": body,
-            "type": type,
-            "internal": effective_internal,
-            "content_type": content_type,
-        }
+            payload: dict[str, Any] = {
+                "ticket_id": ticket_id,
+                "body": body,
+                "type": type,
+                "internal": effective_internal,
+                "content_type": content_type,
+            }
 
-        if subject:
-            payload["subject"] = subject
-        if from_address:
-            payload["from"] = from_address
-        if to_address:
-            payload["to"] = to_address
+            if subject:
+                payload["subject"] = subject
+            if from_address:
+                payload["from"] = from_address
+            if to_address:
+                payload["to"] = to_address
 
-        return await _request(self.valves, "POST", "/ticket_articles", json=payload)
+            result = await _request(self.valves, "POST", "/ticket_articles", json=payload)
+            
+            # Emit citation for the new article
+            base_url = self.valves.base_url.rstrip("/")
+            ticket_url = f"{base_url}/#ticket/zoom/{ticket_id}"
+            await _emit_citation(
+                __event_emitter__,
+                name=f"Ticket #{ticket_id} - New Article",
+                url=ticket_url,
+                content=f"Added article to ticket #{ticket_id}"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully added article to ticket #{ticket_id}", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to create article for ticket #{ticket_id}: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     # ----------------------------
     # User Operations
@@ -643,6 +874,7 @@ class Tools:
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         Search users by name, email, or login.
@@ -653,12 +885,32 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        params = {"query": search}
-        data = await _paginate(self.valves, "/users/search", params=params, page=page, per_page=per_page)
-        return _maybe_compact("user", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, f"Searching users for '{search}'...", done=False)
+            
+            params = {"query": search}
+            data = await _paginate(self.valves, "/users/search", params=params, page=page, per_page=per_page)
+            result = _maybe_compact("user", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Users Search",
+                url=f"{base_url}/users",
+                content=f"Found {len(result)} users matching '{search}'"
+            )
+            
+            await _emit_status(__event_emitter__, f"Found {len(result)} users", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to search users: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_get_user(
-            self, user_id: int, compact: Optional[bool] = None
+            self, user_id: int, compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> Json:
         """
         Get a user by ID.
@@ -667,14 +919,34 @@ class Tools:
           user_id: User ID.
           compact: If true, tool returns a reduced field set.
         """
-        data = await _request(self.valves, "GET", f"/users/{user_id}")
-        return _maybe_compact("user", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, f"Fetching user #{user_id}...", done=False)
+            
+            data = await _request(self.valves, "GET", f"/users/{user_id}")
+            result = _maybe_compact("user", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name=f"User #{user_id}",
+                url=f"{base_url}/#user/profile/{user_id}",
+                content=f"User: {result.get('login', 'N/A')}"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved user #{user_id}", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to get user #{user_id}: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_list_users(
             self,
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         List all users.
@@ -684,8 +956,27 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await _paginate(self.valves, "/users", page=page, per_page=per_page)
-        return _maybe_compact("user", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, "Listing users...", done=False)
+            
+            data = await _paginate(self.valves, "/users", page=page, per_page=per_page)
+            result = _maybe_compact("user", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Users",
+                url=f"{base_url}/users",
+                content=f"Retrieved {len(result)} users"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} users", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to list users: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     # ----------------------------
     # Organization Operations
@@ -696,6 +987,7 @@ class Tools:
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         List organizations.
@@ -705,11 +997,31 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await _paginate(self.valves, "/organizations", page=page, per_page=per_page)
-        return _maybe_compact("organization", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, "Listing organizations...", done=False)
+            
+            data = await _paginate(self.valves, "/organizations", page=page, per_page=per_page)
+            result = _maybe_compact("organization", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Organizations",
+                url=f"{base_url}/organizations",
+                content=f"Retrieved {len(result)} organizations"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} organizations", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to list organizations: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_get_organization(
-            self, organization_id: int, compact: Optional[bool] = None
+            self, organization_id: int, compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> Json:
         """
         Get an organization by ID.
@@ -718,8 +1030,27 @@ class Tools:
           organization_id: Organization ID.
           compact: If true, tool returns a reduced field set.
         """
-        data = await _request(self.valves, "GET", f"/organizations/{organization_id}")
-        return _maybe_compact("organization", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, f"Fetching organization #{organization_id}...", done=False)
+            
+            data = await _request(self.valves, "GET", f"/organizations/{organization_id}")
+            result = _maybe_compact("organization", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name=f"Organization #{organization_id}",
+                url=f"{base_url}/#organization/profile/{organization_id}",
+                content=f"Organization: {result.get('name', 'N/A')}"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved organization #{organization_id}", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to get organization #{organization_id}: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_search_organizations(
             self,
@@ -727,6 +1058,7 @@ class Tools:
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         Search organizations by name.
@@ -737,9 +1069,28 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        params = {"query": search}
-        data = await _paginate(self.valves, "/organizations/search", params=params, page=page, per_page=per_page)
-        return _maybe_compact("organization", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, f"Searching organizations for '{search}'...", done=False)
+            
+            params = {"query": search}
+            data = await _paginate(self.valves, "/organizations/search", params=params, page=page, per_page=per_page)
+            result = _maybe_compact("organization", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Organizations Search",
+                url=f"{base_url}/organizations",
+                content=f"Found {len(result)} organizations matching '{search}'"
+            )
+            
+            await _emit_status(__event_emitter__, f"Found {len(result)} organizations", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to search organizations: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     # ----------------------------
     # Helper Lookup Endpoints
@@ -750,6 +1101,7 @@ class Tools:
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         List ticket states.
@@ -759,14 +1111,34 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await _paginate(self.valves, "/ticket_states", page=page, per_page=per_page)
-        return _maybe_compact("state", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, "Listing ticket states...", done=False)
+            
+            data = await _paginate(self.valves, "/ticket_states", page=page, per_page=per_page)
+            result = _maybe_compact("state", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Ticket States",
+                url=f"{base_url}/api/v1/ticket_states",
+                content=f"Retrieved {len(result)} ticket states"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} ticket states", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to list ticket states: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_list_groups(
             self,
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         List groups.
@@ -776,14 +1148,34 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await _paginate(self.valves, "/groups", page=page, per_page=per_page)
-        return _maybe_compact("group", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, "Listing groups...", done=False)
+            
+            data = await _paginate(self.valves, "/groups", page=page, per_page=per_page)
+            result = _maybe_compact("group", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Groups",
+                url=f"{base_url}/api/v1/groups",
+                content=f"Retrieved {len(result)} groups"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} groups", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to list groups: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_list_priorities(
             self,
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         List ticket priorities.
@@ -793,8 +1185,27 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await _paginate(self.valves, "/ticket_priorities", page=page, per_page=per_page)
-        return _maybe_compact("priority", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, "Listing priorities...", done=False)
+            
+            data = await _paginate(self.valves, "/ticket_priorities", page=page, per_page=per_page)
+            result = _maybe_compact("priority", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Priorities",
+                url=f"{base_url}/api/v1/ticket_priorities",
+                content=f"Retrieved {len(result)} priorities"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} priorities", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to list priorities: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     # ----------------------------
     # Report Profile Operations
@@ -805,6 +1216,7 @@ class Tools:
             page: int = 1,
             per_page: Optional[int] = None,
             compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> list[Json]:
         """
         List report profiles (created by admins). Requires 'report' permission.
@@ -814,11 +1226,31 @@ class Tools:
           per_page: Results per page (defaults to configured per_page).
           compact: If true, tool returns a reduced field set.
         """
-        data = await _paginate(self.valves, "/report_profiles", page=page, per_page=per_page)
-        return _maybe_compact("report_profile", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, "Listing report profiles...", done=False)
+            
+            data = await _paginate(self.valves, "/report_profiles", page=page, per_page=per_page)
+            result = _maybe_compact("report_profile", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name="Zammad Report Profiles",
+                url=f"{base_url}/api/v1/report_profiles",
+                content=f"Retrieved {len(result)} report profiles"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved {len(result)} report profiles", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to list report profiles: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
 
     async def zammad_get_report_profile(
-            self, report_profile_id: int, compact: Optional[bool] = None
+            self, report_profile_id: int, compact: Optional[bool] = None,
+            __event_emitter__: Optional[Any] = None,
     ) -> Json:
         """
         Get a report profile by ID. Requires 'report' permission.
@@ -827,5 +1259,24 @@ class Tools:
           report_profile_id: Report profile ID.
           compact: If true, tool returns a reduced field set.
         """
-        data = await _request(self.valves, "GET", f"/report_profiles/{report_profile_id}")
-        return _maybe_compact("report_profile", data, self.valves, compact)
+        try:
+            await _emit_status(__event_emitter__, f"Fetching report profile #{report_profile_id}...", done=False)
+            
+            data = await _request(self.valves, "GET", f"/report_profiles/{report_profile_id}")
+            result = _maybe_compact("report_profile", data, self.valves, compact)
+            
+            # Emit citation
+            base_url = self.valves.base_url.rstrip("/")
+            await _emit_citation(
+                __event_emitter__,
+                name=f"Report Profile #{report_profile_id}",
+                url=f"{base_url}/api/v1/report_profiles/{report_profile_id}",
+                content=f"Report Profile: {result.get('name', 'N/A')}"
+            )
+            
+            await _emit_status(__event_emitter__, f"Successfully retrieved report profile #{report_profile_id}", done=True)
+            return result
+        except Exception as e:
+            error_msg = f"Failed to get report profile #{report_profile_id}: {str(e)}"
+            await _emit_error(__event_emitter__, error_msg)
+            raise
